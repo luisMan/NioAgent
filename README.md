@@ -659,6 +659,517 @@ Deployment templates
 
 Enterprise features
 
-End of Document (Part 2)
+---
+
+# Appendix A — Detailed Architecture Diagrams
+
+## High-Level System Diagram
+
+```
++-------------------------+
+|       Frontend          |
+|     (Angular App)       |
++-----------+-------------+
+|
+v
++-------------------------+
+|     API Gateway         |
+|  (Rust - Axum/Actix)    |
++-----------+-------------+
+|
+v
++-------------------------+
+|   Agent Orchestrator    |
+|  - Task Analyzer        |
+|  - Planner              |
+|  - Executor             |
+|  - Context Builder      |
+|  - Safety Layer         |
+|  - Reasoning Controller |
++-----------+-------------+
+|
++--------+---------+
+|                  |
+v                  v
++--------+      +----------------+
+|  LLM   |      |     Tools      |
+| Layer  |      | - Web Search   |
+|        |      | - HTTP Client  |
+|        |      | - DB Access    |
+|        |      | - FS Access    |
+|        |      | - RAG Search   |
++--------+      +----------------+
+|
+v
++-------------------------+
+|      Memory Layer       |
+| - Short-term            |
+| - Mid-term              |
+| - Long-term (VectorDB)  |
++-----------+-------------+
+|
+v
++-------------------------+
+|   Sandbox Execution     |
+| - WASM Runtime          |
+| - Process Isolation     |
++-----------+-------------+
+|
+v
++-------------------------+
+| Observability & Security|
++-------------------------+
+
+```
+
+---
+
+# Appendix B — Orchestrator Internals
+
+## Task Analyzer
+
+### Purpose
+Classifies the incoming request into one of the following categories:
+- conversational  
+- analytical  
+- computational  
+- retrieval  
+- transformation  
+- multi-step workflow  
+- tool-required  
+- unsafe / restricted  
+
+### Implementation Notes
+- Uses a lightweight LLM call for classification.
+- Includes rule-based overrides for safety.
+- Produces a `TaskSpec` struct.
+
+### Example Output
+```rust
+TaskSpec {
+    task_type: TaskType::MultiStep,
+    language: "en",
+    requires_tools: true,
+    safety_level: SafetyLevel::Normal,
+}
+
+```
+
+Planner
+Purpose
+Generates a deterministic plan for the agent to follow.
+
+Planning Algorithm
+Identify required tools.
+
+Identify required memory.
+
+Break task into steps.
+
+Assign each step to:
+
+LLM reasoning
+
+Tool execution
+
+Memory retrieval
+
+Validate plan for safety.
+
+Return Plan { steps: Vec<PlanStep> }.
+
+Example Plan
+
+```
+[
+  { step: "Search for relevant documents", tool: "web_search" },
+  { step: "Summarize results", llm: "gpt-4" },
+  { step: "Generate final answer", llm: "gpt-4" }
+]
+
+```
+
+Executor
+Purpose
+Executes each step in the plan.
+
+Execution Flow
+
+```
+for step in plan:
+    if step.requires_tool:
+        call tool
+    else if step.requires_llm:
+        call llm
+    else:
+        perform internal operation
+
+```
+Guarantees
+Timeout enforcement
+
+Error handling
+
+Automatic retries
+
+Logging and tracing
+
+Context Builder
+Purpose
+Constructs the final context window for LLM calls.
+
+Inputs
+user message
+
+memory retrieval results
+
+plan metadata
+
+safety constraints
+
+Outputs
+compressed context
+
+structured prompt
+
+token-budget optimized window
+
+Techniques
+summarization
+
+embedding filtering
+
+deduplication
+
+relevance scoring
+
+Safety Layer
+Responsibilities
+prevent unsafe tool usage
+
+enforce RBAC
+
+block disallowed content
+
+detect hallucinations
+
+validate outputs
+
+Safety Checks
+input validation
+
+output validation
+
+tool schema validation
+
+memory access control
+
+sandbox restrictions
+
+Appendix C — LLM Routing Logic
+Routing Criteria
+1. Complexity
+simple → small model
+
+complex → large model
+
+2. Latency
+real-time → fast model
+
+batch → accurate model
+
+3. Cost
+low-cost mode → local model
+
+high-accuracy mode → premium model
+
+4. Safety
+sensitive tasks → safer model
+
+5. Language
+multilingual tasks → multilingual model
+
+Routing Table Example
+
+Task Type	Preferred Model	Fallbacks
+Conversation	gpt-4o-mini	llama-3-8b
+Analysis	gpt-4o	claude-3-sonnet
+Coding	gpt-4o	deepseek-coder
+Summaries	llama-3-70b	mistral-large
+RAG	gpt-4o	local-embedding-model
+Unsafe/Sensitive	claude-3-opus	gpt-4o
+
+Appendix D — Tools Layer Deep Dive
+Tool Registration
+Registry Structure
+
+```
+pub struct ToolRegistry {
+    tools: HashMap<String, Arc<dyn Tool>>,
+}
+
+```
+
+Registering a Tool
+
+```
+registry.register(Box::new(WebSearchTool::new()));
+```
+Tool Metadata
+name
+
+description
+
+input schema
+
+output schema
+
+RBAC scope
+
+timeout
+
+Example Tool: Web Search
+Input Schema
+
+```
+
+{
+  "query": "string",
+  "max_results": "number"
+}
+
+```
+
+Output Schema
+
+```
+{
+  "results": [
+    {
+      "title": "string",
+      "url": "string",
+      "snippet": "string"
+    }
+  ]
+}
+
+```
+
+Execution Flow
+Validate input
+
+Perform search
+
+Normalize results
+
+Return JSON
+
+Example Tool: HTTP Client
+Capabilities
+GET
+
+POST
+
+PUT
+
+DELETE
+
+Restrictions
+domain allowlist
+
+rate limits
+
+response size limits
+
+Example Tool: Database Access
+Features
+parameterized queries
+
+read-only by default
+
+audit logs
+
+connection pooling
+
+Appendix E — Memory System Deep Dive
+Memory Storage Layout
+
+```
+memory/
+├─ short_term/
+│  ├─ session_id/
+│  │  ├─ messages.json
+│  │  ├─ plan.json
+│  │  └─ scratchpad.json
+├─ mid_term/
+│  ├─ user_id/
+│  │  ├─ preferences.json
+│  │  ├─ goals.json
+│  │  └─ history.json
+└─ long_term/
+   ├─ embeddings/
+   ├─ documents/
+   └─ metadata/
+```
+
+Embedding Pipeline
+Chunk documents
+
+Generate embeddings
+
+Store in vector DB
+
+Store metadata
+
+Build inverted index
+
+Retrieval Pipeline
+
+```
+query → embed → vector search → filter → rerank → summarize → return
+
+```
+Memory Compression
+Techniques
+LLM summarization
+
+semantic clustering
+
+deduplication
+
+token-budget optimization
+
+Appendix F — Sandbox Deep Dive
+WASM Runtime
+Supported Languages
+Rust
+
+JavaScript
+
+Python (via WASM)
+
+Go
+
+Execution Limits
+CPU cycles
+
+memory usage
+
+wall-clock time
+
+file system access
+
+Firecracker Micro‑VMs
+Features
+hardware virtualization
+
+kernel isolation
+
+network disabled
+
+ephemeral filesystem
+
+Security Model
+Guarantees
+no arbitrary syscalls
+
+no uncontrolled network
+
+no persistent FS access
+
+full audit logs
+
+Appendix G — Observability
+Logging
+structured logs
+
+JSON format
+
+trace IDs
+
+correlation IDs
+
+Metrics
+Prometheus
+
+request latency
+
+tool usage
+
+memory retrieval stats
+
+Tracing
+OpenTelemetry
+
+distributed traces
+
+span-level metadata
+
+Appendix H — Deployment Architecture
+Recommended Stack
+
+```
++-------------------------+
+|      Angular Frontend   |
++-------------------------+
+            |
+            v
++-------------------------+
+|   Rust API Gateway      |
++-------------------------+
+            |
+            v
++-------------------------+
+|   Agent Orchestrator    |
++-------------------------+
+            |
+            v
++-------------------------+
+|  Vector DB (Qdrant)     |
+|  Postgres               |
+|  Redis                  |
++-------------------------+
+            |
+            v
++-------------------------+
+|  Sandbox (WASM + VM)    |
++-------------------------+
+```
+
+Appendix I — Security Model
+RBAC
+Roles
+admin
+
+developer
+
+agent
+
+read-only
+
+Permissions
+tool usage
+
+memory access
+
+sandbox execution
+
+API access
+
+Appendix J — Future Extensions
+Planned Features
+multi-agent collaboration
+
+autonomous workflows
+
+plugin marketplace
+
+real-time streaming tools
+
+GPU-accelerated sandbox
+
+distributed memory clusters
+
+End of Document (Part 3)
 
 
